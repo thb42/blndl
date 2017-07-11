@@ -47,6 +47,7 @@ class blndl:
                 self._loggedin = False
             else:
                 logging.error("Something went wrong! HTTP Code: {0}".format(r.status_code))
+                self._loggedin = None
 
     def _loadByURL(self, url):
         if(self._loggedin == False):
