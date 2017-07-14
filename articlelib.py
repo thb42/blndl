@@ -1,10 +1,5 @@
-import requests, json, sys, logging
-from PyQt4.QtCore import QUrl, QObject, SIGNAL
-from PyQt4.QtGui import QApplication, QPrinter
-#from PyQt4.QtPrintSupport import
-from PyQt4.QtWebKit import QWebView
-#from html.parser import HTMLParser
-
+import requests, json, sys, logging, pypandoc, webkit_server, html
+from html.parser import HTMLParser
 
 class blndl:
     def __init__(self, loglevel=logging.WARNING, logfile=None):
@@ -17,9 +12,6 @@ class blndl:
         self._lastresponse = None
         self._loginresponse = None
         self._items = []
-        self._app = None
-        self._webview = None
-        self._printer = None
 
     def login(self, username, password):
         data = {"login":username, "password":password}
@@ -46,7 +38,7 @@ class blndl:
             if(r.status_code == 200):
                 self._loggedin = False
             else:
-                logging.error("Something went wrong! HTTP Code: {0}".format(r.status_code))
+                logging.error("Something went wrong during logout! HTTP Code: {0}".format(r.status_code))
                 self._loggedin = None
 
     def _loadByURL(self, url):
@@ -157,7 +149,7 @@ class blndl:
             print(p)
 
 
-    def downloadArticle(self, item_index, path, pagesize = QPrinter.A4, orientation = QPrinter.Portrait):
+    def downloadArticle(self, item_index, path):
         if(self._items == None):
             logging.warning("No items loaded!")
             return False
@@ -165,11 +157,6 @@ class blndl:
         if(item_index >= len(self._items)):
             raise IndexError
             return False
-
-        if(self._app == None):
-            self._app = QApplication(sys.argv)
-            self._webview = QWebView()
-            self._printer = QPrinter()
 
         a = self._items[item_index]
 
@@ -195,22 +182,41 @@ class blndl:
         mod_header["Host"] = "blendle.com"
 
         # print(url)
-        html = self._session.get(url = url, headers = mod_header)
+        #let webkit visit url to exec javascript
+        c = webkit_server.Client()
+        for k,v in mod_header.items():
+            c.set_header(key=k, value=v)
+        c.visit(url)
 
-        if(html.status_code != 200):
+        if(c.status_code() != 200):
+            logging.error("Could not handle JavaScript! HTML Error:{0}".format(c.status_code()))
             return False
 
-        self._printer.setPageSize(pagesize)
-        self._printer.setOrientation(orientation)
-        self._printer.setOutputFileName(headline + ".pdf")
+        p = JS_HTML_Parser(c)
+        p.feed(str(c.body))
+        p.close()
 
-        self._webview.setContent(html.text, "text/html,application/xhtml+xml,application/xml")
-        #self._webview.evaluateJavaScript()
+        html = c.body()
 
-        def convert():
-            self._webview.print_(self._printer)
-            QApplication.exit()
-
-        QObject.connect(self._webview, SIGNAL("loadFinished(bool)"), convert)
-        self._app.exec_()
+        # convert html to pdf with pandoc
+        of=path+"{0}_{1}.pdf".format(provider, headline.replace(" ", "_"))
+        output = pypandoc.convert_text(html, 'pdf', outputfile=of, format='html')
+        assert output == ""
         return True
+
+class JS_HTML_Parser(HTMLParser):
+    def __init__(self, wk_client):
+        HTMLParser.__init__(self)
+        self._c = wk_client
+        self.script = False
+    def handle_starttag(self, tag, attrs):
+        if tag == 'script':
+            self.script = True
+    def handle_endtag(self, tag):
+        if tag == 'script':
+            self.script = False
+    def handle_data(self, data):
+        try:
+            self._c.exec_script(data)
+        except webkit_server.InvalidResponseError:
+            pass
